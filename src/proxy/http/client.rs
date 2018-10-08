@@ -11,7 +11,6 @@ use tower_h2;
 use super::{h1, Settings};
 use super::glue::{BodyPayload, HttpBody, HyperConnect};
 use super::upgrade::{HttpConnect, Http11Upgrade};
-use super::super::Reconnect;
 use svc;
 use task::BoxExecutor;
 use transport::connect;
@@ -186,10 +185,7 @@ where
     B: tower_h2::Body + Send + 'static,
     <B::Data as IntoBuf>::Buf: Send + 'static,
 {
-    type Value = Reconnect<
-        Config,
-        Client<C::Value, ::logging::ClientExecutor<&'static str, net::SocketAddr>, B>,
-    >;
+    type Value = Client<C::Value, ::logging::ClientExecutor<&'static str, net::SocketAddr>, B>;
     type Error = C::Error;
 
     fn make(&self, t: &T) -> Result<Self::Value, Self::Error> {
@@ -199,8 +195,7 @@ where
             .with_settings(config.settings.clone())
             .executor();
         debug!("building client={:?}", config);
-        let client = Client::new(&config.settings, connect, executor);
-        Ok(Reconnect::new(config.clone(), client))
+        Ok(Client::new(&config.settings, connect, executor))
     }
 }
 
