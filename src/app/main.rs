@@ -1,5 +1,6 @@
 use bytes;
 use futures::*;
+use futures_watch;
 use h2;
 use http;
 use indexmap::IndexSet;
@@ -173,6 +174,12 @@ where
             config.outbound_ports_disable_protocol_detection,
         );
 
+        let (dns_resolver, dns_bg) = dns::Resolver::from_system_config_and_env(&config)
+            .unwrap_or_else(|e| {
+                // TODO: Stack DNS configuration infallible.
+                panic!("invalid DNS configuration: {:?}", e);
+            });
+
         let tap_next_id = tap::NextId::default();
         let (taps, observe) = control::Observe::new(100);
         let (http_metrics, http_report) = proxy::http::metrics::new::<
@@ -209,12 +216,31 @@ where
                 panic!("invalid DNS configuration: {:?}", e);
             });
 
+        let controller_client = {
+            control_host_and_port.map(|host_and_port| {
+                let (identity, watch) = match controller_tls {
+                    Conditional::Some(config) =>
+                        (Conditional::Some(config.server_identity), config.config),
+                    Conditional::None(reason) => {
+                        // This watch never updates.
+                        let (watch, _) = futures_watch::Watch::new(Conditional::None(reason));
+                        (Conditional::None(reason), watch)
+                    },
+                };
+
+                let connect =
+                    transport::lookup::Stack::new(dns_resolver.clone());
+
+                watch::Layer::new(watch)
+                    .and_then(reconnect::Layer::new().with_fixed_backoff(config.control_backoff_delay))
+                    .bind(client::Stack::new("out", connect.clone()))
+            })
+        };
+
         let (resolver, resolver_bg) = control::destination::new(
+            controller_client,
             dns_resolver.clone(),
             config.namespaces.clone(),
-            control_host_and_port,
-            controller_tls,
-            config.control_backoff_delay,
             config.destination_concurrency_limit,
         );
 

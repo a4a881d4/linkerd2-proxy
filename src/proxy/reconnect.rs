@@ -1,17 +1,21 @@
 use futures::{task, Async, Future, Poll};
 use std::fmt;
 use std::marker::PhantomData;
+use std::time::Duration;
 use tower_reconnect;
+use tokio_timer::{clock, Delay};
 
 use svc;
 
 #[derive(Debug)]
 pub struct Layer<T, M> {
+    backoff: Backoff,
     _p: PhantomData<fn() -> (T, M)>,
 }
 
 #[derive(Debug)]
 pub struct Stack<T, M> {
+    backoff: Backoff,
     inner: M,
     _p: PhantomData<fn() -> T>,
 }
@@ -30,10 +34,19 @@ where
     /// The target, used for debug logging.
     target: T,
 
+    backoff: Backoff,
+    active_backoff: Option<Delay>,
+
     /// Prevents logging repeated connect errors.
     ///
     /// Set back to false after a connect succeeds, to log about future errors.
     mute_connect_error_log: bool,
+}
+
+#[derive(Clone, Debug)]
+enum Backoff {
+    None,
+    Fixed(Duration),
 }
 
 pub struct ResponseFuture<N: svc::NewService> {
@@ -50,7 +63,15 @@ where
 {
     pub fn new() -> Self {
         Self {
+            backoff: Backoff::None,
             _p: PhantomData,
+        }
+    }
+
+    pub fn with_fixed_backoff(self, wait: Duration) -> Self {
+        Self {
+            backoff: Backoff::Fixed(wait),
+            .. self
         }
     }
 }
@@ -58,6 +79,7 @@ where
 impl<T, M> Clone for Layer<T, M> {
     fn clone(&self) -> Self {
         Self {
+            backoff: self.backoff.clone(),
             _p: PhantomData,
         }
     }
@@ -76,6 +98,7 @@ where
     fn bind(&self, inner: M) -> Self::Stack {
         Stack {
             inner,
+            backoff: self.backoff.clone(),
             _p: PhantomData,
         }
     }
@@ -86,6 +109,7 @@ where
 impl<T, M: Clone> Clone for Stack<T, M> {
     fn clone(&self) -> Self {
         Self {
+            backoff: self.backoff.clone(),
             inner: self.inner.clone(),
             _p: PhantomData,
         }
@@ -106,6 +130,8 @@ where
         Ok(Service {
             inner: tower_reconnect::Reconnect::new(new_service),
             target: target.clone(),
+            backoff: self.backoff.clone(),
+            active_backoff: None,
             mute_connect_error_log: false,
         })
     }
@@ -125,6 +151,22 @@ where
     type Future = ResponseFuture<N>;
 
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        match  self.backoff {
+            Backoff::None => {}
+            Backoff::Fixed(_) => {
+                if let Some(delay) = self.active_backoff.as_mut() {
+                    match delay.poll() {
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Ok(Async::Ready(())) => {},
+                        Err(e) => {
+                            error!("timer failed; continuing without backoff: {}", e);
+                        }
+                    }
+                }
+            }
+        };
+        self.active_backoff = None;
+
         match self.inner.poll_ready() {
             Ok(Async::NotReady) => Ok(Async::NotReady),
             Ok(ready) => {
@@ -148,6 +190,15 @@ where
                 } else {
                     debug!("connect error to {:?}: {}", self.target, err);
                 }
+
+                // Set a backoff if appropriate.
+                //
+                // This future need not be polled immediately because the
+                // task is notified below.
+                self.active_backoff = match self.backoff {
+                    Backoff::None => None,
+                    Backoff::Fixed(ref wait) => Some(Delay::new(clock::now() + *wait)),
+                };
 
                 // The inner service is now idle and will renew its internal
                 // state on the next poll. Instead of doing this immediately,

@@ -5,15 +5,13 @@ use std::{
     },
     fmt,
     mem,
-    time::{Instant, Duration},
+    time::Instant,
     sync::Arc,
 };
 use futures::{
-    future,
     sync::mpsc,
     Async, Future, Poll, Stream,
 };
-use futures_watch;
 use tower_grpc as grpc;
 use tower_h2::{BoxBody, HttpService, RecvBody};
 
@@ -31,17 +29,11 @@ use control::{
     remote_stream::{Receiver, Remote},
 };
 use dns;
-use transport::{tls, DnsNameAndPort, HostAndPort};
-use Conditional;
-use svc::stack::watch;
+use transport::DnsNameAndPort;
 
-mod client;
 mod destination_set;
 
-use self::{
-    client::BindClient,
-    destination_set::DestinationSet,
-};
+use self::destination_set::DestinationSet;
 
 type ActiveQuery<T> = Remote<PbUpdate, T>;
 type UpdateRx<T> = Receiver<PbUpdate, T>;
@@ -52,7 +44,7 @@ type UpdateRx<T> = Receiver<PbUpdate, T>;
 /// service is healthy, it reads requests from `request_rx`, determines how to resolve the
 /// provided authority to a set of addresses, and ensures that resolution updates are
 /// propagated to all requesters.
-struct Background<T: HttpService<ResponseBody = RecvBody>> {
+pub(super) struct Background<T: HttpService<ResponseBody = RecvBody>> {
     new_query: NewQuery,
     dns_resolver: dns::Resolver,
     dsts: DestinationCache<T>,
@@ -92,53 +84,6 @@ enum DestinationServiceQuery<T: HttpService<ResponseBody = RecvBody>> {
     NoCapacity,
 }
 
-/// Returns a new discovery background task.
-pub(super) fn task(
-    request_rx: mpsc::UnboundedReceiver<ResolveRequest>,
-    dns_resolver: dns::Resolver,
-    namespaces: Namespaces,
-    host_and_port: Option<HostAndPort>,
-    controller_tls: tls::ConditionalConnectionConfig<tls::ClientConfigWatch>,
-    control_backoff_delay: Duration,
-    concurrency_limit: usize,
-) -> impl Future<Item = (), Error = ()>
-{
-    // Build up the Controller Client Stack
-    let mut client = host_and_port.map(|host_and_port| {
-        let (identity, watch) = match controller_tls {
-            Conditional::Some(config) =>
-                (Conditional::Some(config.server_identity), config.config),
-            Conditional::None(reason) => {
-                // If there's no connection config, then construct a new
-                // `Watch` that never updates to construct the `WatchService`.
-                // We do this here rather than calling `ClientConfig::no_tls`
-                // in order to propagate the reason for no TLS to the watch.
-                let (watch, _) = futures_watch::Watch::new(Conditional::None(reason));
-                (Conditional::None(reason), watch)
-            },
-        };
-        let bind_client = BindClient::new(
-            identity,
-            &dns_resolver,
-            host_and_port,
-            control_backoff_delay,
-        );
-        watch::Service::try(watch, bind_client)
-            .expect("client construction should be infallible")
-    });
-
-    let mut disco = Background::new(
-        request_rx,
-        dns_resolver,
-        namespaces,
-        concurrency_limit,
-    );
-
-    future::poll_fn(move || {
-        disco.poll_rpc(&mut client)
-    })
-}
-
 // ==== impl Background =====
 
 impl<T> Background<T>
@@ -146,7 +91,7 @@ where
     T: HttpService<RequestBody = BoxBody, ResponseBody = RecvBody>,
     T::Error: fmt::Debug,
 {
-    fn new(
+    pub(super) fn new(
         request_rx: mpsc::UnboundedReceiver<ResolveRequest>,
         dns_resolver: dns::Resolver,
         namespaces: Namespaces,
@@ -161,7 +106,7 @@ where
         }
     }
 
-   fn poll_rpc(&mut self, client: &mut Option<T>) -> Poll<(), ()> {
+   pub(super) fn poll_rpc(&mut self, client: &mut Option<T>) -> Poll<(), ()> {
         // This loop is make sure any streams that were found disconnected
         // in `poll_destinations` while the `rpc` service is ready should
         // be reconnected now, otherwise the task would just sleep...

@@ -213,7 +213,7 @@ where
     <B::Data as IntoBuf>::Buf: Send + 'static,
 {
     /// Create a new `Client`, bound to a specific protocol (HTTP/1 or HTTP/2).
-    fn new(settings: &Settings, connect: C, executor: E) -> Self {
+    pub fn new(settings: &Settings, connect: C, executor: E) -> Self {
         match settings {
             Settings::Http1 { was_absolute_form, .. } => {
                 let h1 = hyper::Client::builder()
