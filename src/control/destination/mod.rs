@@ -35,7 +35,7 @@ use futures::{
 use indexmap::IndexMap;
 use std::fmt;
 use std::sync::{Arc, Weak};
-use tower_h2::{BoxBody, HttpService, RecvBody};
+use tower_h2::{Body, Data, HttpService};
 
 use dns;
 use transport::tls;
@@ -118,7 +118,8 @@ pub fn new<T>(
     concurrency_limit: usize,
 ) -> (Resolver, impl Future<Item = (), Error = ()>)
 where
-    T: HttpService<RequestBody = BoxBody, ResponseBody = RecvBody>,
+    T: HttpService,
+    T::ResponseBody: Body<Data = Data>,
     T::Error: fmt::Debug,
 {
     let (request_tx, rx) = mpsc::unbounded();
