@@ -35,7 +35,7 @@ use futures::{
 use indexmap::IndexMap;
 use std::fmt;
 use std::sync::{Arc, Weak};
-use tower_h2::{Body, Data, HttpService};
+use tower_h2::{Body, BoxBody, Data, HttpService};
 
 use dns;
 use transport::tls;
@@ -112,19 +112,19 @@ pub enum ProtocolHint {
 /// the background future is executed on the controller thread's executor
 /// to drive the background task.
 pub fn new<T>(
-    client: Option<T>,
+    mut client: Option<T>,
     dns_resolver: dns::Resolver,
     namespaces: Namespaces,
     concurrency_limit: usize,
 ) -> (Resolver, impl Future<Item = (), Error = ()>)
 where
-    T: HttpService,
+    T: HttpService<RequestBody = BoxBody>,
     T::ResponseBody: Body<Data = Data>,
     T::Error: fmt::Debug,
 {
     let (request_tx, rx) = mpsc::unbounded();
     let disco = Resolver { request_tx };
-    let bg = Background::new(
+    let mut bg = Background::new(
         rx,
         dns_resolver,
         namespaces,

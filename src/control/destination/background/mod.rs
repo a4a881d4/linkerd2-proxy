@@ -10,10 +10,10 @@ use std::{
 };
 use futures::{
     sync::mpsc,
-    Async, Future, Poll, Stream,
+    Async, Poll, Stream,
 };
 use tower_grpc as grpc;
-use tower_h2::{Body, Data, HttpService};
+use tower_h2::{Body, BoxBody, Data, HttpService};
 
 use api::destination::client::Destination;
 use api::destination::{
@@ -88,7 +88,7 @@ enum DestinationServiceQuery<T: HttpService> {
 
 impl<T> Background<T>
 where
-    T: HttpService,
+    T: HttpService<RequestBody = BoxBody>,
     T::ResponseBody: Body<Data = Data>,
     T::Error: fmt::Debug,
 {
@@ -342,7 +342,7 @@ impl NewQuery {
         connect_or_reconnect: &str,
     ) -> DestinationServiceQuery<T>
     where
-        T: HttpService,
+        T: HttpService<RequestBody = BoxBody>,
         T::ResponseBody: Body<Data = Data>,
         T::Error: fmt::Debug,
     {

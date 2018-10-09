@@ -210,16 +210,10 @@ where
                 })
         });
 
-        let (dns_resolver, dns_bg) = dns::Resolver::from_system_config_and_env(&config)
-            .unwrap_or_else(|e| {
-                // TODO: DNS configuration should be infallible.
-                panic!("invalid DNS configuration: {:?}", e);
-            });
-
         let controller_client = control_host_and_port.map(|host_and_port| {
             use super::control;
 
-            let (identity, watch) = match controller_tls {
+            let (identity, tls_client_config) = match controller_tls {
                 Conditional::Some(config) => {
                     (Conditional::Some(config.server_identity), config.config)
                 }
@@ -239,18 +233,17 @@ where
 
             // Establishes connections to remote peers.
             //
-            // TODO metrics
-            let connect = proxy::timeout::Layer::new(config.control_connect_timeout)
-                .bind(connect::Stack::new());
-
             // TODO add_origin
+            // TODO metrics
             limit::Layer::new(MAX_IN_FLIGHT)
                 .and_then(timeout::Layer::new(config.bind_timeout))
                 .and_then(buffer::Layer::new())
                 .and_then(watch_tls::Layer::new(tls_client_config))
                 .and_then(reconnect::Layer::new().with_fixed_backoff(config.control_backoff_delay))
                 .and_then(control::resolve::Layer::new(dns_resolver.clone()))
-                .bind(client::Stack::new("control", connect))
+                .and_then(control::client::Layer::new())
+                .and_then(proxy::timeout::Layer::new(config.control_connect_timeout))
+                .bind(connect::Stack::new())
                 .make(&control_config)
                 .expect("controller configuration must be valid")
         });

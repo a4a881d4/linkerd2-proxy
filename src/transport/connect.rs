@@ -1,6 +1,5 @@
 extern crate tokio_connect;
 
-use futures::Future;
 pub use self::tokio_connect::Connect;
 use std::{error, fmt, io};
 use std::marker::PhantomData;
