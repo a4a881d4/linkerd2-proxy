@@ -2,7 +2,6 @@ mod addr_info;
 pub mod connect;
 mod connection;
 mod io;
-pub mod lookup;
 pub mod metrics;
 mod names;
 mod prefixed;

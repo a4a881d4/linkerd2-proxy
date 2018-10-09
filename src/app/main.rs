@@ -24,7 +24,7 @@ use proxy::{
     http::{
         balance, client, insert_target, metrics::timestamp_request_open, normalize_uri, router,
     },
-    limit, reconnect, timeout,
+    limit, reconnect, timeout, watch_tls,
 };
 use svc::{self, Layer as _Layer, Stack as _Stack};
 use tap;
@@ -216,26 +216,44 @@ where
                 panic!("invalid DNS configuration: {:?}", e);
             });
 
-        let controller_client = {
-            control_host_and_port.map(|host_and_port| {
-                let (identity, watch) = match controller_tls {
-                    Conditional::Some(config) =>
-                        (Conditional::Some(config.server_identity), config.config),
-                    Conditional::None(reason) => {
-                        // This watch never updates.
-                        let (watch, _) = futures_watch::Watch::new(Conditional::None(reason));
-                        (Conditional::None(reason), watch)
-                    },
-                };
+        let controller_client = control_host_and_port.map(|host_and_port| {
+            use super::control;
 
-                let connect =
-                    transport::lookup::Stack::new(dns_resolver.clone());
+            let (identity, watch) = match controller_tls {
+                Conditional::Some(config) => {
+                    (Conditional::Some(config.server_identity), config.config)
+                }
+                Conditional::None(reason) => {
+                    // This watch never updates.
+                    let (watch, _) = futures_watch::Watch::new(Conditional::None(reason));
+                    (Conditional::None(reason), watch)
+                }
+            };
 
-                watch::Layer::new(watch)
-                    .and_then(reconnect::Layer::new().with_fixed_backoff(config.control_backoff_delay))
-                    .bind(client::Stack::new("out", connect.clone()))
-            })
-        };
+            let control_config = control::Config::new(
+                host_and_port,
+                identity,
+                config.control_backoff_delay,
+                config.control_connect_timeout
+            );
+
+            // Establishes connections to remote peers.
+            //
+            // TODO metrics
+            let connect = proxy::timeout::Layer::new(config.control_connect_timeout)
+                .bind(connect::Stack::new());
+
+            // TODO add_origin
+            limit::Layer::new(MAX_IN_FLIGHT)
+                .and_then(timeout::Layer::new(config.bind_timeout))
+                .and_then(buffer::Layer::new())
+                .and_then(watch_tls::Layer::new(tls_client_config))
+                .and_then(reconnect::Layer::new().with_fixed_backoff(config.control_backoff_delay))
+                .and_then(control::resolve::Layer::new(dns_resolver.clone()))
+                .bind(client::Stack::new("control", connect))
+                .make(&control_config)
+                .expect("controller configuration must be valid")
+        });
 
         let (resolver, resolver_bg) = control::destination::new(
             controller_client,
@@ -252,6 +270,7 @@ where
             use super::outbound;
 
             let http_metrics = http_metrics.clone();
+            let discovery = outbound::discovery::Resolve::new(resolver);
 
             // As the outbound proxy accepts connections, we don't do any
             // special transport-level handling.
@@ -282,26 +301,22 @@ where
                 .and_then(limit::Layer::new(MAX_IN_FLIGHT))
                 .and_then(timeout::Layer::new(config.bind_timeout))
                 .and_then(buffer::Layer::new())
-                .and_then(balance::Layer::new(outbound::discovery::Resolve::new(
-                    resolver,
-                )))
+                .and_then(balance::Layer::new(discovery))
                 .and_then(outbound::orig_proto_upgrade::Layer::new())
-                .and_then(outbound::tls_config::Layer::new(tls_client_config))
+                .and_then(watch_tls::Layer::new(tls_client_config))
                 .and_then(proxy::http::metrics::Layer::new(
                     http_metrics,
                     classify::Classify,
                 ))
                 .and_then(tap::Layer::new(tap_next_id.clone(), taps.clone()))
                 .and_then(normalize_uri::Layer::new())
-                .and_then(svc::stack_per_request::Layer::new());
-
-            let client = reconnect::Layer::new()
-                .bind(client::Stack::new("out", connect.clone()));
+                .and_then(svc::stack_per_request::Layer::new())
+                .and_then(reconnect::Layer::new());
 
             let capacity = config.outbound_router_capacity;
             let max_idle_age = config.outbound_router_max_idle_age;
             let router = router_layer
-                .bind(client)
+                .bind(client::Stack::new("out", connect.clone()))
                 .make(&router::Config::new("out", capacity, max_idle_age))
                 .expect("outbound router");
 
@@ -359,16 +374,14 @@ where
                 ))
                 .and_then(tap::Layer::new(tap_next_id, taps))
                 .and_then(normalize_uri::Layer::new())
-                .and_then(svc::stack_per_request::Layer::new());
-
-            let client = reconnect::Layer::new()
-                .bind(client::Stack::new("in", connect.clone()));
+                .and_then(svc::stack_per_request::Layer::new())
+                .and_then(reconnect::Layer::new());
 
             // Build a router using the above policy
             let capacity = config.inbound_router_capacity;
             let max_idle_age = config.inbound_router_max_idle_age;
             let router = router_layer
-                .bind(client)
+                .bind(client::Stack::new("in", connect.clone()))
                 .make(&router::Config::new("in", capacity, max_idle_age))
                 .expect("inbound router");
 

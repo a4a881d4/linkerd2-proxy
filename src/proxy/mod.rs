@@ -12,6 +12,7 @@ pub mod resolve;
 pub mod server;
 mod tcp;
 pub mod timeout;
+pub mod watch_tls;
 
 pub use self::resolve::{Resolve, Resolution};
 pub use self::server::{Server, Source};
