@@ -152,6 +152,7 @@ where
             mut runtime,
         } = self;
 
+        const MAX_IN_FLIGHT: usize = 10_000;
         let control_host_and_port = config.control_host_and_port.clone();
 
         info!("using controller at {:?}", control_host_and_port);
@@ -233,12 +234,10 @@ where
 
             // Establishes connections to remote peers.
             //
+            // TODO buffer for sharing
             // TODO add_origin
             // TODO metrics
-            limit::Layer::new(MAX_IN_FLIGHT)
-                .and_then(timeout::Layer::new(config.bind_timeout))
-                .and_then(buffer::Layer::new())
-                .and_then(watch_tls::Layer::new(tls_client_config))
+            watch_tls::Layer::new(tls_client_config)
                 .and_then(reconnect::Layer::new().with_fixed_backoff(config.control_backoff_delay))
                 .and_then(control::resolve::Layer::new(dns_resolver.clone()))
                 .and_then(control::client::Layer::new())
@@ -254,8 +253,6 @@ where
             config.namespaces.clone(),
             config.destination_concurrency_limit,
         );
-
-        const MAX_IN_FLIGHT: usize = 10_000;
 
         let (drain_tx, drain_rx) = drain::channel();
 
