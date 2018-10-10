@@ -235,9 +235,9 @@ where
             // Establishes connections to remote peers.
             //
             // TODO buffer for sharing
-            // TODO add_origin
             // TODO metrics
-            watch_tls::Layer::new(tls_client_config)
+            control::add_origin::Layer::new()
+                .and_then(watch_tls::Layer::new(tls_client_config))
                 .and_then(reconnect::Layer::new().with_fixed_backoff(config.control_backoff_delay))
                 .and_then(control::resolve::Layer::new(dns_resolver.clone()))
                 .and_then(control::client::Layer::new())

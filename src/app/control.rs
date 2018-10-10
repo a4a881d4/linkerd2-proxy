@@ -50,6 +50,79 @@ impl fmt::Display for Config {
     }
 }
 
+pub mod add_origin {
+    extern crate tower_add_origin;
+
+    use bytes::Bytes;
+    use http::uri;
+    use self::tower_add_origin::AddOrigin;
+    use std::marker::PhantomData;
+
+    use svc;
+
+    #[derive(Debug)]
+    pub struct Layer<M> {
+        _p: PhantomData<fn() -> M>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Stack<M> {
+        inner: M,
+    }
+
+    // === impl Layer ===
+
+    impl<M> Layer<M>
+    where
+        M: svc::Stack<super::Config>,
+    {
+        pub fn new() -> Self {
+            Self {
+                _p: PhantomData,
+            }
+        }
+    }
+
+    impl<M> Clone for Layer<M>
+    where
+        M: svc::Stack<super::Config>,
+    {
+        fn clone(&self) -> Self {
+            Self::new()
+        }
+    }
+
+    impl<M> svc::Layer<super::Config, super::Config, M> for Layer<M>
+    where
+        M: svc::Stack<super::Config>,
+    {
+        type Value = <Stack<M> as svc::Stack<super::Config>>::Value;
+        type Error = <Stack<M> as svc::Stack<super::Config>>::Error;
+        type Stack = Stack<M>;
+
+        fn bind(&self, inner: M) -> Self::Stack {
+            Stack { inner }
+        }
+    }
+
+    // === impl Stack ===
+
+    impl<M> svc::Stack<super::Config> for Stack<M>
+    where
+        M: svc::Stack<super::Config>,
+    {
+        type Value = AddOrigin<M::Value>;
+        type Error = M::Error;
+
+        fn make(&self, config: &super::Config) -> Result<Self::Value, Self::Error> {
+            let inner = self.inner.make(config)?;
+            let scheme = uri::Scheme::from_shared(Bytes::from_static(b"http")).unwrap();
+            let authority = uri::Authority::from(&config.host_and_port);
+            Ok(AddOrigin::new(inner, scheme, authority))
+        }
+    }
+}
+
 /// A module that resolves the controller's `host_and_port` once before building
 /// a client.
 pub mod resolve {
