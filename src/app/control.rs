@@ -50,12 +50,13 @@ impl fmt::Display for Config {
     }
 }
 
+/// Sets the request's URI from `Config`.
 pub mod add_origin {
-    extern crate tower_add_origin;
+  extern crate tower_add_origin;
 
+    use self::tower_add_origin::AddOrigin;
     use bytes::Bytes;
     use http::uri;
-    use self::tower_add_origin::AddOrigin;
     use std::marker::PhantomData;
 
     use svc;
@@ -77,9 +78,7 @@ pub mod add_origin {
         M: svc::Stack<super::Config>,
     {
         pub fn new() -> Self {
-            Self {
-                _p: PhantomData,
-            }
+            Self { _p: PhantomData }
         }
     }
 
@@ -123,8 +122,7 @@ pub mod add_origin {
     }
 }
 
-/// A module that resolves the controller's `host_and_port` once before building
-/// a client.
+/// Resolves the controller's `host_and_port` once before building a client.
 pub mod resolve {
     use futures::{Future, Poll};
     use std::marker::PhantomData;
@@ -327,6 +325,7 @@ pub mod resolve {
     impl<S: error::Error, I: error::Error> error::Error for Error<S, I> {}
 }
 
+/// Creates a client suitable for gRPC.
 pub mod client {
     use h2;
     use std::marker::PhantomData;
